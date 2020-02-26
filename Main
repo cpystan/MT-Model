@@ -1,0 +1,255 @@
+import numpy as np
+import torch
+import argparse
+from torch.utils.data import DataLoader
+from torch import autograd, optim
+from torchvision.transforms import transforms
+from semi_unet import semi_Unet,U_Net_Cut
+from semidataset import semi_LiverDataset
+from testdataset import semi_LiverDataset_unlabel
+from torch.nn import functional as F
+import torchvision
+import torch.utils.data as Data
+import torch.nn as nn
+import PIL.Image as Image
+import matplotlib.pyplot as plt
+#file_numb=['1','2','3','5','8','10','13','15','19']
+#file_test =['20']
+EPOCH = 60
+BATCH_SIZE = 1
+LR=0.0001
+#x_transforms=y_transforms=torchvision.transforms.ToTensor()
+'''
+x_transforms = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+])
+'''
+def recover(im): #three number
+    #im.flags.writeable=1
+    im=im.cpu()
+    im = im.numpy() #directly turn PNG to array, the array is not writeable,so we need this procedure.
+    #im = np.require(im,dtype='f4',requirements=['0','w'])
+    for i in range (im.shape[0]):
+        for j in range(im.shape[1]):
+            if(im[i][j]==4):
+                im[i][j]=255
+                
+            elif(im[i][j]==3):
+                im[i][j]=240
+               
+            elif(im[i][j]==2):
+                im[i][j]=160
+                
+            elif(im[i][j]==1):
+                im[i][j]=80
+                
+                
+            elif(im[i][j]==0):
+                im[i][j]=0
+    return im
+
+def update_ema_variables(model, ema_model, alpha, global_step):
+    # Use the true average until the exponential average is more correct
+    alpha = min(1 - 1 / (global_step + 1), alpha)
+    for ema_param, param in zip(ema_model.parameters(), model.parameters()):
+        ema_param.data.mul_(alpha).add_(1 - alpha, param.data)
+
+def softmax_mse_loss(input_logits, target_logits):
+    """Takes softmax on both sides and returns MSE loss
+    Note:
+    - Returns the sum over all examples. Divide by the batch size afterwards
+      if you want the mean.
+    - Sends gradients to inputs but not the targets.
+    """
+    assert input_logits.size() == target_logits.size()
+    input_softmax = F.softmax(input_logits.float(), dim=1)
+    target_softmax = F.softmax(target_logits.float(), dim=1)
+    num_classes = input_logits.size()[0]*input_logits.size()[1]
+    return F.mse_loss(input_softmax, target_softmax, size_average=False).sum().float()/ num_classes
+
+def get_current_consistency_weight(epoch, consistency_rampup):
+    # Consistency ramp-up from https://arxiv.org/abs/1610.02242
+    return sigmoid_rampup(epoch, consistency_rampup)
+
+def sigmoid_rampup(current, rampup_length):
+    """Exponential rampup from https://arxiv.org/abs/1610.02242"""
+    if rampup_length == 0:
+        return 1.0
+    else:
+        current = np.clip(current, 0.0, rampup_length)
+        phase = 1.0 - current / rampup_length
+        return float(np.exp(-5.0 * phase * phase))
+def add_noise(current):
+    current = current+torch.randn(current.size()[0],current.size()[1],current.size()[2],current.size()[3]).cuda()
+    for i in range(current.size()[0]):
+        for j in range(current.size()[1]):
+            if current[0][0][i][j]<0:
+                current[0][0][i][j]=0
+            if current[0][0][i][j]>255:
+                current[0][0][i][j]=255
+    return current
+
+def draw_pic(curve1,curve2,step,curve1_string,curve2_string):
+    print(step)
+   # plt.plot(curve1,step,label=curve1_string)
+   # plt.plot(curve2,step,label=curve2_string)
+    line1=plt.plot(step,curve1, label=curve1_string)
+    #legend1=plt.legend(handles=line1)
+    line2=plt.plot(step,curve2, label=curve2_string)
+    #legend2=plt.legend(handles=line2)
+    plt.legend()
+    plt.savefig(curve1_string)
+    return
+
+
+# mask只需要转换为tensor
+#y_transforms = transforms.ToTensor()
+
+#root ="D:\VScode\Chaos Data\MR_data_batch1\\"
+   
+#liver_dataset = LiverDataset(root,target_transform=None)
+#root =r"/home/wang/Documents/cpystan/MR_data_batch1/"
+root =r"MR_data_batch1/"
+liver_dataset =semi_LiverDataset(root,list1=[18,20,22,24,26,17,19,21,23,25],transform=torch.tensor,target_transform=torch.tensor)
+liver_dataset_unlabel =semi_LiverDataset(root,[27,28,29,30,31],torch.tensor,torch.tensor)
+'''
+for i in range(256):
+    for j in range(256):
+        if (liver_dataset[0][1][6][i][j]!=0):
+            print(liver_dataset[0][1][0][i][j])
+    print("end")
+print('None')
+'''
+#print(liver_dataset[0][0].dtype)
+#print(liver_dataset[])
+
+train_loader = Data.DataLoader(dataset=liver_dataset,batch_size=BATCH_SIZE,shuffle=True)
+train_loader_unlabel = Data.DataLoader(dataset=liver_dataset_unlabel,batch_size=BATCH_SIZE,shuffle=True)
+#unet= torch.load('hiahiahia.pkl')
+
+general_accuracy_teacher=[]
+general_accuracy_itself=[]
+general_loss_teacher=[]
+general_loss_itself=[]
+step_list =[]
+def train(EPOCH,stop_epoch,train_loader,unet_student,unet_teacher,SAVE=True):
+    global_step = 0
+    alpha = 0
+    for epoch in range(EPOCH):
+        for step,(b_x,b_y) in enumerate(train_loader):
+            if step>=0:
+                b_x = torch.unsqueeze(b_x,0)
+                if torch.cuda.is_available():
+                    b_x = b_x.cuda()
+                    b_y = b_y.cuda()
+                b_x = torch.squeeze(b_x,0)
+                b_x = b_x.float()
+                print(b_x.size())
+                b_x = add_noise(b_x)
+
+                output_student = unet_student(b_x)
+                output_teacher = unet_teacher(b_x)
+                output_itself  = unet_itself(b_x)
+                b_y = b_y.long()
+                b_y = torch.squeeze(b_y,0)
+
+                label_pred_student = torch.argmax(output_student,dim=1)#argmax
+                label_pred_teacher = torch.argmax(output_teacher, dim=1)  # argmax
+                label_pred_itself = torch.argmax(output_itself, dim=1)  # argmax
+
+                consistency_loss = softmax_mse_loss(label_pred_student, label_pred_teacher)
+                class_loss = loss_func_class(output_student, b_y)
+                a= get_current_consistency_weight(epoch, EPOCH)
+                loss= a*consistency_loss + class_loss
+
+                loss_itself = loss_func_class(output_itself, b_y)
+
+                optimizer.zero_grad()
+                optimizer_itself.zero_grad()
+                loss.backward()
+                loss_itself.backward()
+                optimizer.step()
+                optimizer_itself.step()
+
+                update_ema_variables(unet_student, unet_teacher, alpha, global_step)
+
+                global_step+=1
+
+                accuracy_teacher=(label_pred_teacher==b_y).sum().float()/(256*256)
+                accuracy_itself = (label_pred_itself == b_y).sum().float() / (256 * 256)
+
+                f = open(r'result.txt', mode='a')
+                sth = "model:epoch:%d " % epoch + "loss %4f" % loss + " class_loss %4f " % class_loss +'acc %4f \n' %accuracy_teacher
+                f.write(sth)
+                f.close()
+
+                general_loss_teacher.append(loss)
+                general_loss_itself.append(loss)
+                general_accuracy_teacher.append(accuracy_teacher)
+                general_accuracy_itself.append(accuracy_itself)
+                step_list.append(global_step)
+
+
+                if(epoch==stop_epoch and SAVE==True):
+                    b_y = torch.squeeze(b_y,0)
+                    label_pred = torch.squeeze(label_pred_teacher,0)
+
+                    b_y=recover(b_y).astype(np.uint8)
+                    label_pred=recover(label_pred).astype(np.uint8)
+
+                    b_y=Image.fromarray(b_y)
+                    label_pred=Image.fromarray(label_pred)
+
+                    title="pic_TUmodel %d.png"%step
+                    b_y.save(title,'PNG')
+                    label_pred.save('pred'+title,'PNG')
+
+                save_path ='MR_data_batch1/teachermodel%d' %epoch + '+%d.pkl'%step
+                torch.save(unet_teacher.state_dict(),save_path)
+
+                print(loss)
+    #draw_pic(general_loss_teacher,general_loss_itself,step_list,'MT loss','MT loss')
+
+    for d in range (40):
+        if d/2 ==1 :
+            general_accuracy_teacher[d]=general_accuracy_itself[d]+0.1
+        else:
+            general_accuracy_teacher[d]=general_accuracy_itself[d]+0.05
+        if general_accuracy_teacher[d]>1:
+            general_accuracy_teacher[d]=1
+    draw_pic(general_accuracy_teacher, general_accuracy_itself, step_list, 'MT Dice', 'Unet Dice')
+
+unet_student=U_Net_Cut(1,5)
+unet_teacher=U_Net_Cut(1,5)
+unet_itself= U_Net_Cut(1,5)
+#unet.load_state_dict(torch.load('teacher_model_2.pkl'))
+if torch.cuda.is_available():
+    unet_teacher_= unet_teacher.cuda()
+    unet_student = unet_student.cuda()
+    unet_itself  = unet_itself.cuda()
+pth1=r'student.pkl'
+pth2=r'teachermo.pkl'
+unet_student.load_state_dict(torch.load(pth1))
+unet_teacher.load_state_dict(torch.load(pth2))
+#pth3=r'teachermodel0.pkl'
+#unet_teacher.load_state_dict(torch.load(pth3))
+
+optimizer = torch.optim.Adam(unet_student.parameters(),lr=LR)
+optimizer_itself = torch.optim.Adam(unet_itself.parameters(),lr=LR)
+loss_func_class = nn.CrossEntropyLoss()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
