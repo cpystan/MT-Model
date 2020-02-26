@@ -1,0 +1,135 @@
+
+import torch.utils.data as data
+import PIL.Image as Image
+import os
+import pydicom
+import torch
+import torchvision.transforms as transforms
+import matplotlib.pyplot as plt
+import numpy as np
+
+#file_num=['1','2','3','5','8','10','13','15','19']
+file_num=['1']
+#list1=[18,20,22,24,26,17,19,21,23,25] 
+
+
+def classification(im): #three number
+    #im.flags.writeable=1
+    im = np.array(im) #directly turn PNG to array, the array is not writeable,so we need this procedure.
+    #im = np.require(im,dtype='f4',requirements=['0','w'])
+    for i in range (im.shape[0]):
+        for j in range(im.shape[1]):
+            if(im[i][j]>=255):
+                im[i][j]=4
+                
+            elif(im[i][j]<255 and im[i][j]>=240):
+                im[i][j]=3
+               
+            elif(im[i][j]<240 and im[i][j]>=160):
+                im[i][j]=2
+                
+            elif(im[i][j]<160 and im[i][j]>=80):
+                im[i][j]=1
+                
+                
+            elif(im[i][j]<80 and im[i][j]>=0):
+                im[i][j]=0
+    return im
+
+def norm(im):
+    im = np.array(im)
+    for i in range(im.shape[0]):
+        for j in range(im.shape[1]):
+            im[i][j] = im[i][j]/255
+    return im
+
+
+def make_dataset(root,list1):
+   #img1=[]
+#img2=[]
+    IMG=[]
+    count=0
+    for i in range(len(file_num)):
+        for k in list1:
+        #if(count<7):
+        #print(i)
+        #print(file_num[i])
+        #print(root)
+            root0=root+file_num[i]
+        #print(root)
+           
+            img1=[]
+            img2=[]
+            img3=[]
+            
+            root2=root0+r'/T2SPIR'+r'/DICOM_anon'
+            root3=root0+r'/T2SPIR'+r'/Ground'
+     
+           
+            img=os.path.join(root2,"IMG (%d).dcm"%(k+1))
+            im=os.path.join(root3,"liver_%03d.png"%(k+1))
+            
+                #img = pydicom.read_file(img).pixel_array.astype(np.float32)
+
+            img = pydicom.read_file(img).pixel_array.astype(np.int16)
+               
+                #plt.imshow(img.pixel_array,'gray')
+                #plt.savefig('test.jpg')
+                #img = Image.fromarray(img)
+                #img.show()
+                #img = transforms.CenterCrop(176)(img)
+                #img = np.asarray(img).astype(np.float32)
+                #img = norm(img)
+            #img = torch.from_numpy(img)
+            #img = Image.fromarray(img).convert('RGB')
+               # img = img.tolist()
+            
+            im =  Image.open(im)
+                #m.show()
+                #im = transforms.CenterCrop(256)(im)
+                
+            #im=transforms.ToTensor()(im)
+            im = np.asarray(im)
+            im = classification(im)
+            
+            img1.append(img)
+            img2.append(im)
+            IMG.append([img1,img2])
+            
+      
+    return IMG
+        
+        
+'''
+    n=len(os.listdir(root))//2)
+    for i in range(n):
+        img=os.path.join(root,"%03d.jpg"%i)
+        mask=os.path.join(root,"%03d_mask.jpg"%i)
+        imgs.append((img,mask))
+    return imgs
+'''
+
+
+class semi_LiverDataset(data.Dataset):
+    def __init__(self, root, list1,transform=None, target_transform=None):
+        imgs = make_dataset(root,list1)
+        self.imgs = imgs
+        self.transform = transform
+        self.target_transform = target_transform
+
+    def __getitem__(self, index):
+        img_x, img_y = self.imgs[index]
+        #img_x = Image.open(x_path)
+        #img_y = Image.open(y_path)
+        if self.transform is not None:
+            img_x = self.transform(img_x)
+        if self.target_transform is not None:
+            img_y = self.target_transform(img_y)
+        return img_x, img_y
+
+    def __len__(self):
+        return len(self.imgs)
+
+
+    
+
