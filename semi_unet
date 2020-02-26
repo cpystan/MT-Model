@@ -49,51 +49,37 @@ class semi_Unet(nn.Module):
 
     def forward(self,x):
         c1=self.conv1(x)
-        print(c1.size())
+    
         p1=self.pool1(c1)
-        print(p1.size())
+       
         c2=self.conv2(p1)
-        print(c2.size())
+        
         p2=self.pool2(c2)
-        print(p2.size())
+       
         c3=self.conv3(p2)
-        print(c3.size())
+       
         p3=self.pool3(c3)
-        print(p3.size())
+       
         c4=self.conv4(p3)
-        print(c4.size())
+       
         p4=self.pool4(c4)
-        print(p4.size())
+       
         c5=self.conv5(p4)
-        print(c5.size())
+
         up_6= self.up6(c5)
-        print(up_6.size())
         merge6 = torch.cat([up_6, c4], dim=1)
-        print(merge6.size())
         c6=self.conv6(merge6)
-        print(c6.size())
         up_7=self.up7(c6)
-        print(up_7.size())
         merge7 = torch.cat([up_7, c3], dim=1)
-        print(merge7.size())
         c7=self.conv7(merge7)
-        print(c7.size())
         up_8=self.up8(c7)
-        print(up_8.size())
         merge8 = torch.cat([up_8, c2], dim=1)
         c8=self.conv8(merge8)
         up_9=self.up9(c8)
         merge9=torch.cat([up_9,c1*3],dim=1)
-       # print(merge9.size())
-      #  print('1')
         c9=self.conv9(merge9)
-        print(c9.size())
-     #   print('2')
         c10=self.conv10(c9)
-        print(c10.size())
         out = nn.Sigmoid()(c10)
-       # print(out.size())
-       # print('end')
         return out
 
 class U_Net_Cut(nn.Module):
