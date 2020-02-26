@@ -210,14 +210,6 @@ def train(EPOCH,stop_epoch,train_loader,unet_student,unet_teacher,SAVE=True):
 
                 print(loss)
     #draw_pic(general_loss_teacher,general_loss_itself,step_list,'MT loss','MT loss')
-
-    for d in range (40):
-        if d/2 ==1 :
-            general_accuracy_teacher[d]=general_accuracy_itself[d]+0.1
-        else:
-            general_accuracy_teacher[d]=general_accuracy_itself[d]+0.05
-        if general_accuracy_teacher[d]>1:
-            general_accuracy_teacher[d]=1
     draw_pic(general_accuracy_teacher, general_accuracy_itself, step_list, 'MT Dice', 'Unet Dice')
 
 unet_student=U_Net_Cut(1,5)
